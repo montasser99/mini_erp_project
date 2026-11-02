@@ -351,3 +351,4 @@ export default function MovementsIndex({ movements, products, warehouses }: Move
         </AuthenticatedLayout>
     );
 }
+

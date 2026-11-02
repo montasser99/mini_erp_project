@@ -2,6 +2,7 @@ import ApplicationLogo from '@/Components/ApplicationLogo';
 import Dropdown from '@/Components/Dropdown';
 import NavLink from '@/Components/NavLink';
 import ResponsiveNavLink from '@/Components/ResponsiveNavLink';
+import { PageProps } from '@/types';
 import { Link, usePage } from '@inertiajs/react';
 import { PropsWithChildren, ReactNode, useState } from 'react';
 
@@ -9,7 +10,8 @@ export default function Authenticated({
     header,
     children,
 }: PropsWithChildren<{ header?: ReactNode }>) {
-    const user = usePage().props.auth.user;
+    const { auth, flash } = usePage<PageProps>().props;
+    const user = auth.user;
 
     const [showingNavigationDropdown, setShowingNavigationDropdown] =
         useState(false);
@@ -207,6 +209,25 @@ export default function Authenticated({
                         {header}
                     </div>
                 </header>
+            )}
+
+            {/* Flash messages (Succès / Erreur) */}
+            {flash?.success && (
+                <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 mt-4">
+                    <div className="p-4 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg flex items-center gap-3 shadow-sm">
+                        <span className="text-xl">✅</span>
+                        <span className="text-sm font-semibold">{flash.success}</span>
+                    </div>
+                </div>
+            )}
+
+            {flash?.error && (
+                <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 mt-4">
+                    <div className="p-4 bg-rose-50 border border-rose-200 text-rose-800 rounded-lg flex items-center gap-3 shadow-sm">
+                        <span className="text-xl">⚠️</span>
+                        <span className="text-sm font-semibold">{flash.error}</span>
+                    </div>
+                </div>
             )}
 
             <main>{children}</main>
