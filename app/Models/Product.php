@@ -15,10 +15,12 @@ class Product extends Model
         'sku',
         'description',
         'price',
+        'is_active',
     ];
 
     protected $casts = [
         'price' => 'decimal:2',
+        'is_active' => 'boolean',
     ];
 
     /**

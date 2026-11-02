@@ -56,10 +56,30 @@ class WarehouseController extends Controller
     }
 
     /**
-     * Supprimer un entrepôt.
+     * Supprimer un entrepôt avec protection d'intégrité ERP.
+     *
+     * Règle d'or ERP : Un entrepôt référencé dans des mouvements de stock
+     * (source ou destination) ou détenant du stock actif NE PEUT PAS être
+     * supprimé physiquement afin de garantir l'immuabilité de l'audit trail.
+     * L'utilisateur doit plutôt le désactiver (is_active = false).
      */
     public function destroy(Warehouse $warehouse)
     {
+        // 1. Vérifier les mouvements historiques source ou destination
+        if ($warehouse->stockMovements()->exists() || $warehouse->destinationStockMovements()->exists()) {
+            return redirect()->route('warehouses.index')
+                ->with('error', "Suppression interdite : l'entrepôt '{$warehouse->name}' est référencé dans des mouvements de stock immuables. Veuillez plutôt le désactiver.");
+        }
+
+        // 2. Vérifier s'il y a du stock physique résiduel
+        $hasActiveStock = $warehouse->stockLevels()->where('quantity', '>', 0)->exists();
+        if ($hasActiveStock) {
+            return redirect()->route('warehouses.index')
+                ->with('error', "Suppression interdite : l'entrepôt '{$warehouse->name}' contient encore des articles en stock.");
+        }
+
+        // 3. Suppression autorisée uniquement si aucun mouvement et stock nul
+        $warehouse->stockLevels()->delete();
         $warehouse->delete();
 
         return redirect()->route('warehouses.index')

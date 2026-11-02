@@ -29,10 +29,18 @@ class Warehouse extends Model
     }
 
     /**
-     * Les mouvements liés à cet entrepôt (source).
+     * Les mouvements liés à cet entrepôt (source ou unique).
      */
     public function stockMovements(): HasMany
     {
         return $this->hasMany(StockMovement::class);
+    }
+
+    /**
+     * Les mouvements de transfert dont cet entrepôt est le destinataire.
+     */
+    public function destinationStockMovements(): HasMany
+    {
+        return $this->hasMany(StockMovement::class, 'destination_warehouse_id');
     }
 }

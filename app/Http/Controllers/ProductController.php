@@ -50,6 +50,7 @@ class ProductController extends Controller
             'sku' => ['required', 'string', 'max:50', 'unique:products,sku,' . $product->id],
             'description' => ['nullable', 'string'],
             'price' => ['required', 'numeric', 'min:0'],
+            'is_active' => ['nullable', 'boolean'],
         ]);
 
         $product->update($validated);
@@ -59,14 +60,32 @@ class ProductController extends Controller
     }
 
     /**
-     * Supprimer un produit.
+     * Supprimer un produit avec protection d'intégrité ERP.
+     *
+     * Règle d'or ERP : Un article rattaché à des stocks ou à un journal
+     * d'audit (mouvements) NE PEUT PAS être supprimé physiquement.
+     * Il doit être archivé (is_active = false).
      */
     public function destroy(Product $product)
     {
+        // 1. Vérifier s'il y a des mouvements historiques
+        if ($product->stockMovements()->exists()) {
+            return redirect()->route('products.index')
+                ->with('error', "Suppression interdite : le produit '{$product->name}' possède un historique de mouvements d'audit immuable. Veuillez plutôt le désactiver.");
+        }
+
+        // 2. Vérifier s'il y a du stock actif
+        $hasActiveStock = $product->stockLevels()->where('quantity', '>', 0)->exists();
+        if ($hasActiveStock) {
+            return redirect()->route('products.index')
+                ->with('error', "Suppression interdite : le produit '{$product->name}' a du stock disponible en entrepôt.");
+        }
+
+        // 3. Suppression autorisée uniquement si aucun mouvement et stock nul
+        $product->stockLevels()->delete();
         $product->delete();
 
         return redirect()->route('products.index')
             ->with('success', 'Produit supprimé avec succès.');
     }
 }
-

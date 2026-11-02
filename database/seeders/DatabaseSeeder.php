@@ -3,6 +3,7 @@
 namespace Database\Seeders;
 
 use App\Models\Product;
+use App\Models\StockMovement;
 use App\Models\User;
 use App\Models\Warehouse;
 use App\Services\StockService;
@@ -104,10 +105,16 @@ class DatabaseSeeder extends Seeder
         }
 
         // 4. Mouvements initiaux avec StockService pour garantir la cohérence
+        // Règle d'or ERP : Seeder idempotent — vérifie la référence unique avant insertion.
         $stockService = app(StockService::class);
+        $seedMovement = function (array $data, int $userId) use ($stockService) {
+            if (!StockMovement::where('reference', $data['reference'])->exists()) {
+                $stockService->createMovement($data, $userId);
+            }
+        };
 
         // Entrées de stock à Paris
-        $stockService->createMovement([
+        $seedMovement([
             'product_id' => $products[0]->id, // Dell Laptop
             'warehouse_id' => $wParis->id,
             'type' => 'IN',
@@ -116,7 +123,7 @@ class DatabaseSeeder extends Seeder
             'notes' => 'Livraison fournisseur Dell usine',
         ], $admin->id);
 
-        $stockService->createMovement([
+        $seedMovement([
             'product_id' => $products[1]->id, // Écran
             'warehouse_id' => $wParis->id,
             'type' => 'IN',
@@ -125,7 +132,7 @@ class DatabaseSeeder extends Seeder
             'notes' => 'Stock initial écrans 4K',
         ], $admin->id);
 
-        $stockService->createMovement([
+        $seedMovement([
             'product_id' => $products[2]->id, // Souris
             'warehouse_id' => $wParis->id,
             'type' => 'IN',
@@ -134,7 +141,7 @@ class DatabaseSeeder extends Seeder
             'notes' => 'Accessoires ergonomiques',
         ], $operator->id);
 
-        $stockService->createMovement([
+        $seedMovement([
             'product_id' => $products[3]->id, // Clavier
             'warehouse_id' => $wParis->id,
             'type' => 'IN',
@@ -143,7 +150,7 @@ class DatabaseSeeder extends Seeder
             'notes' => 'Périphériques de saisie',
         ], $operator->id);
 
-        $stockService->createMovement([
+        $seedMovement([
             'product_id' => $products[4]->id, // Serveur
             'warehouse_id' => $wParis->id,
             'type' => 'IN',
@@ -152,7 +159,7 @@ class DatabaseSeeder extends Seeder
             'notes' => 'Serveurs infrastructure datacenter',
         ], $admin->id);
 
-        $stockService->createMovement([
+        $seedMovement([
             'product_id' => $products[5]->id, // Câbles
             'warehouse_id' => $wParis->id,
             'type' => 'IN',
@@ -162,7 +169,7 @@ class DatabaseSeeder extends Seeder
         ], $operator->id);
 
         // Entrées directes à Lyon
-        $stockService->createMovement([
+        $seedMovement([
             'product_id' => $products[0]->id,
             'warehouse_id' => $wLyon->id,
             'type' => 'IN',
@@ -171,7 +178,7 @@ class DatabaseSeeder extends Seeder
             'notes' => 'Réception locale Lyon',
         ], $operator->id);
 
-        $stockService->createMovement([
+        $seedMovement([
             'product_id' => $products[2]->id,
             'warehouse_id' => $wLyon->id,
             'type' => 'IN',
@@ -181,7 +188,7 @@ class DatabaseSeeder extends Seeder
         ], $operator->id);
 
         // Transferts Inter-Entrepôts de Paris vers Lyon et Lille
-        $stockService->createMovement([
+        $seedMovement([
             'product_id' => $products[0]->id, // Transfert 15 PC vers Lyon
             'warehouse_id' => $wParis->id,
             'destination_warehouse_id' => $wLyon->id,
@@ -191,7 +198,7 @@ class DatabaseSeeder extends Seeder
             'notes' => 'Réapprovisionnement agence Auvergne-Rhône-Alpes',
         ], $admin->id);
 
-        $stockService->createMovement([
+        $seedMovement([
             'product_id' => $products[1]->id, // Transfert 20 Écrans vers Lille
             'warehouse_id' => $wParis->id,
             'destination_warehouse_id' => $wLille->id,
@@ -201,7 +208,7 @@ class DatabaseSeeder extends Seeder
             'notes' => 'Déploiement nouvel open space Nord',
         ], $operator->id);
 
-        $stockService->createMovement([
+        $seedMovement([
             'product_id' => $products[5]->id, // Transfert 50 Câbles vers Lille
             'warehouse_id' => $wParis->id,
             'destination_warehouse_id' => $wLille->id,
@@ -212,7 +219,7 @@ class DatabaseSeeder extends Seeder
         ], $operator->id);
 
         // Sorties de stock (Expéditions clients)
-        $stockService->createMovement([
+        $seedMovement([
             'product_id' => $products[0]->id, // Sortie 10 PC
             'warehouse_id' => $wParis->id,
             'type' => 'OUT',
@@ -221,7 +228,7 @@ class DatabaseSeeder extends Seeder
             'notes' => 'Commande client Société Générale',
         ], $admin->id);
 
-        $stockService->createMovement([
+        $seedMovement([
             'product_id' => $products[2]->id, // Sortie 25 Souris
             'warehouse_id' => $wParis->id,
             'type' => 'OUT',
@@ -230,7 +237,7 @@ class DatabaseSeeder extends Seeder
             'notes' => 'Pack bienvenue nouveaux collaborateurs',
         ], $operator->id);
 
-        $stockService->createMovement([
+        $seedMovement([
             'product_id' => $products[4]->id, // Sortie 2 Serveurs
             'warehouse_id' => $wParis->id,
             'type' => 'OUT',

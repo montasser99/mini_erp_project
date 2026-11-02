@@ -17,8 +17,9 @@
    - Algorithme anti-stock négatif & gestion des erreurs (422, 401, 404, 500)
    - Verrouillage ciblé (Produit + Entrepôt) et stratégie anti-deadlock dans les transferts
 3. [Partie 3 : Tests Automatisés & Qualité (20 pts)](#partie-3--tests-automatisés--qualité-20-pts)
-   - Suite de tests PHPUnit : **42 tests passants, 128 assertions (100% verts)**
+   - Suite de tests PHPUnit : **51 tests passants, 164 assertions (100% verts)**
    - Test de concurrence réel multi-processus sur MySQL InnoDB
+   - Tests d'intégrité stricte : RESTRICT sur les clés étrangères, CHECK SQL, seeders idempotents
    - Collection Postman complète importable (`./mini_erp_stock_postman_collection.json`)
 4. [Partie 4 : Revue de Code & Leadership (20 pts)](#partie-4--revue-de-code--leadership-20-pts)
    - Audit critique du pseudo-code `stock = getStock(id); if stock >= qty: saveStock(id, stock-qty)`
@@ -81,9 +82,11 @@
 ┌────────────────────────────────────────────────────────────────────────┐
 │                   BASE DE DONNÉES (MySQL 9.1 / InnoDB)                │
 │                                                                        │
-│  - Moteur InnoDB (Support ACID complet)                                │
-│  - Row-Level Locking (Verrous de ligne)                                │
-│  - Clés étrangères ON DELETE CASCADE / RESTRICT                       │
+│  - Moteur InnoDB forcé (`config/database.php`)                         │
+│  - Row-Level Locking (Verrous pessimistes FOR UPDATE)                  │
+│  - Clés étrangères immuables : `ON DELETE RESTRICT`                    │
+│  - Contrainte SQL native `CHECK (quantity >= 0)` sur stock_levels      │
+│  - Contrainte SQL native `CHECK (quantity > 0)` sur stock_movements    │
 │  - Contraintes UNIQUE (products.sku, stock_levels[product, warehouse]) │
 │  - Index composites pour recherches performantes (GET /stock)          │
 └────────────────────────────────────────────────────────────────────────┘
@@ -94,17 +97,24 @@
 | Entité | Rôle & Attributs Métier | Relations Eloquent |
 |---|---|---|
 | **User** | Gestion des accès et auditabilité des actions.<br>`id`, `name`, `email`, `password` | `hasMany(StockMovement)` |
-| **Product** | Référence article du catalogue.<br>`id`, `name`, `sku` (UNIQUE), `price`, `description` | `hasMany(StockLevel)`<br>`hasMany(StockMovement)` |
-| **Warehouse** | Site de stockage physique ou logique.<br>`id`, `name`, `location`, `is_active` | `hasMany(StockLevel)`<br>`hasMany(StockMovement)` |
-| **StockLevel** | Quantité actuelle en temps réel d'un article dans un entrepôt précis.<br>`id`, `product_id`, `warehouse_id`, `quantity` (>= 0)<br>*Contrainte UNIQUE(`product_id`, `warehouse_id`)* | `belongsTo(Product)`<br>`belongsTo(Warehouse)` |
-| **StockMovement** | Journal d'audit immuable (Ledger table append-only) de chaque variation.<br>`id`, `product_id`, `warehouse_id`, `type` (IN, OUT, TRANSFER), `quantity`, `destination_warehouse_id`, `reference`, `notes`, `user_id`, `created_at` | `belongsTo(Product)`<br>`belongsTo(Warehouse)`<br>`belongsTo(DestinationWarehouse)`<br>`belongsTo(User)` |
+| **Product** | Référence article du catalogue.<br>`id`, `name`, `sku` (UNIQUE), `price`, `description`, `is_active` | `hasMany(StockLevel)`<br>`hasMany(StockMovement)` |
+| **Warehouse** | Site de stockage physique ou logique.<br>`id`, `name`, `location`, `is_active` | `hasMany(StockLevel)`<br>`hasMany(StockMovement)`<br>`hasMany(destinationStockMovements)` |
+| **StockLevel** | Quantité actuelle en temps réel d'un article dans un entrepôt précis.<br>`id`, `product_id`, `warehouse_id`, `quantity` (>= 0 via CHECK SQL)<br>*Contrainte UNIQUE(`product_id`, `warehouse_id`)* | `belongsTo(Product)`<br>`belongsTo(Warehouse)` |
+| **StockMovement** | Journal d'audit immuable (Ledger table append-only) de chaque variation.<br>`id`, `product_id`, `warehouse_id`, `type` (IN, OUT, TRANSFER), `quantity` (> 0 via CHECK SQL), `destination_warehouse_id`, `reference`, `notes`, `user_id`, `created_at` | `belongsTo(Product)`<br>`belongsTo(Warehouse)`<br>`belongsTo(DestinationWarehouse)`<br>`belongsTo(User)` |
 
-### 1.3 Cohérence du Stock & Transactions ACID
+### 1.3 Cohérence du Stock & Invariants d'Intégrité ERP
 
-La cohérence du stock repose sur **trois piliers fondamentaux** :
+La cohérence du stock repose sur **quatre piliers fondamentaux** :
 1. **L'Atomicité (All-or-Nothing)** : Une opération de transfert qui débite l'entrepôt source mais échoue à créditer l'entrepôt destination déclenche un `ROLLBACK` automatique. Aucune marchandise ne peut être perdue.
 2. **Le Verrouillage Pessimiste (`lockForUpdate`)** : En environnement multi-utilisateurs haute fréquence, deux requêtes concurrentes lisant simultanément `quantity = 10` pour prélever 8 et 7 unités mèneraient sans verrou à un stock final négatif ou corrompu. Le `SELECT ... FOR UPDATE` force la seconde transaction à attendre la fin du commit de la première.
-3. **Le Journal d'Audit Immuable (`stock_movements`)** : Les mouvements de stock sont enregistrés en mode append-only. Aucune mise à jour ni suppression n'est autorisée sur cette table, garantissant une traçabilité totale.
+3. **Le Journal d'Audit Immuable (`stock_movements`) & Règle `ON DELETE RESTRICT`** :
+   - Les mouvements de stock constituent un grand livre comptable (ledger) strictement en append-only.
+   - Les relations de clés étrangères utilisent `ON DELETE RESTRICT`. Il est physiquement impossible en base de données de supprimer un produit, un entrepôt ou un utilisateur qui a participé à des mouvements de stock.
+   - Au niveau applicatif, `ProductController::destroy` et `WarehouseController::destroy` interdisent la suppression si des mouvements ou du stock résiduel existent, orientant vers la désactivation logique (`is_active = false`).
+4. **Défense en Profondeur : Contraintes SQL CHECK Natives** :
+   - `stock_levels.quantity` est verrouillé au niveau moteur par `CONSTRAINT chk_stock_levels_quantity CHECK (quantity >= 0)`.
+   - `stock_movements.quantity` est verrouillé par `CONSTRAINT chk_stock_movements_quantity CHECK (quantity > 0)`.
+   - Même en cas de bug applicatif, MySQL InnoDB rejette directement toute écriture conduisant à un stock négatif (Code erreur 3819).
 
 ---
 
@@ -254,7 +264,7 @@ $secondLevel = StockLevel::where('product_id', $productId)
 
 ## Partie 3 : Tests Automatisés & Qualité (20 pts)
 
-### 3.1 Suite Complète PHPUnit : 42 Tests Validés (100% Green)
+### 3.1 Suite Complète PHPUnit : 51 Tests Validés (100% Green)
 
 Exécution réelle constatée via `php artisan test` :
 
@@ -267,16 +277,32 @@ Exécution réelle constatée via `php artisan test` :
    PASS  Tests\Feature\Auth\PasswordResetTest (4 tests)
    PASS  Tests\Feature\Auth\PasswordUpdateTest (2 tests)
    PASS  Tests\Feature\Auth\RegistrationTest (2 tests)
+   PASS  Tests\Feature\DataIntegrityTest (9 tests)
    PASS  Tests\Feature\ExampleTest (1 test)
    PASS  Tests\Feature\ProfileTest (5 tests)
    PASS  Tests\Feature\RealMysqlConcurrencyTest (1 test)
    PASS  Tests\Feature\StockMovementTest (14 tests)
 
-  Tests:    42 passed (128 assertions)
-  Duration: 4.88s
+  Tests:    51 passed (164 assertions)
+  Duration: 5.37s
 ```
 
-### 3.2 Test de Concurrence Réel Multi-Processus sur MySQL InnoDB
+### 3.2 Tests d'Intégrité Stricte & Non-Régression ERP
+
+Fichier : [`tests/Feature/DataIntegrityTest.php`](tests/Feature/DataIntegrityTest.php)
+
+9 tests de non-régression couvrant exhaustivement les règles de gouvernance des données :
+1. `test_product_cannot_be_deleted_via_controller_if_it_has_movements` : Le contrôleur bloque avec message flash la suppression d'un produit ayant un historique.
+2. `test_warehouse_cannot_be_deleted_via_controller_if_it_has_movements` : Blocage identique pour un entrepôt impliqué comme source ou destination.
+3. `test_product_cannot_be_deleted_with_active_stock` : Interdiction de supprimer un article détenant du stock actif.
+4. `test_warehouse_cannot_be_deleted_with_active_stock` : Interdiction de supprimer un entrepôt avec du stock non nul.
+5. `test_clean_product_and_warehouse_can_be_deleted` : Autorisation de suppression pour des entités vierges de tout stock et mouvement.
+6. `test_eloquent_relationships` : Vérification des liaisons `$user->stockMovements`, `$warehouse->destinationStockMovements`, `$product->stockMovements` et du cast booléen `is_active`.
+7. `test_database_seeder_is_idempotent` : Vérifie que réexécuter `php artisan db:seed` ne duplique aucun mouvement et conserve les stocks initiaux exacts.
+8. `test_mysql_innodb_foreign_key_restrict_prevents_cascade` : Test direct sur MySQL InnoDB vérifiant que l'instruction SQL brute `DELETE` est rejetée avec l'erreur `1451` (`foreign key constraint fails`).
+9. `test_mysql_innodb_check_constraint_rejects_negative_stock` : Test direct sur MySQL 9.1 vérifiant qu'un `INSERT INTO stock_levels (quantity = -5)` est immédiatement stoppé avec l'erreur `3819` (`Check constraint 'chk_stock_levels_quantity' is violated`).
+
+### 3.3 Test de Concurrence Réel Multi-Processus sur MySQL InnoDB
 
 Fichier : [`tests/Feature/RealMysqlConcurrencyTest.php`](tests/Feature/RealMysqlConcurrencyTest.php)
 
@@ -290,7 +316,7 @@ Ce test lance **deux processus PHP distincts via `proc_open`** s'exécutant simu
   - Le stock final en base MySQL est de **exactement 2 unités**.
   - Zéro race condition, zéro corruption de données.
 
-### 3.3 Collection Postman Prête à l'Emploi
+### 3.4 Collection Postman Prête à l'Emploi
 
 Fichier : [`mini_erp_stock_postman_collection.json`](mini_erp_stock_postman_collection.json)  
 Il s'importe en 1 clic dans Postman et comprend :
@@ -520,7 +546,8 @@ Une fois le serveur démarré, ouvrez votre navigateur :
   - Sélection du mode Transfert : Paris vers Lyon pour 10 unités.
   - Constat du débit/crédit atomique et explication de la prévention des deadlocks par ordonnancement canonique des verrous.
 - **4:00 - 5:00 | Revue de Leadership & Suite de Tests**
-  - Exécution en direct dans le terminal : `php artisan test` (**42 tests au vert**).
+  - Exécution en direct dans le terminal : `php artisan test` (**51 tests au vert, 164 assertions**).
+  - Démonstration des garanties d'intégrité : `ON DELETE RESTRICT`, `CHECK (quantity >= 0)` native MySQL, et seeders idempotents.
   - Présentation de la revue critique du pseudo-code et de la découpe en User Stories pour les 2 développeurs.
 
 ---
@@ -531,12 +558,18 @@ Une fois le serveur démarré, ouvrez votre navigateur :
 |---|---|:---:|
 | Architecture Frontend / Backend / BDD / Auth | [`resources/js/app.tsx`](resources/js/app.tsx), [`bootstrap/app.php`](bootstrap/app.php), [`config/database.php`](config/database.php) | **PASS** |
 | Entités Product, Warehouse, StockMovement, User, StockLevel | [`app/Models/`](app/Models/) | **PASS** |
+| Protection de l'historique d'audit (ON DELETE RESTRICT) | [`database/migrations/2026_11_02_140000_enforce_strict_data_integrity.php`](database/migrations/2026_11_02_140000_enforce_strict_data_integrity.php) | **PASS** |
+| Interdiction de suppression destructive si stocks/mouvements | [`app/Http/Controllers/ProductController.php`](app/Http/Controllers/ProductController.php), [`app/Http/Controllers/WarehouseController.php`](app/Http/Controllers/WarehouseController.php) | **PASS** |
+| Contrainte SQL CHECK(quantity >= 0) native MySQL | [`database/migrations/2026_11_02_140000_enforce_strict_data_integrity.php`](database/migrations/2026_11_02_140000_enforce_strict_data_integrity.php) | **PASS** |
+| Données de démonstration & Seeder 100% idempotent | [`database/seeders/DatabaseSeeder.php`](database/seeders/DatabaseSeeder.php) | **PASS** |
+| Relations Eloquent complètes (User->movements, Warehouse->destMovements) | [`app/Models/User.php`](app/Models/User.php), [`app/Models/Warehouse.php`](app/Models/Warehouse.php), [`app/Models/Product.php`](app/Models/Product.php) | **PASS** |
 | API POST /movements (et alias POST /api/movements) | [`routes/web.php`](routes/web.php), [`routes/api.php`](routes/api.php), [`app/Http/Controllers/Api/StockController.php`](app/Http/Controllers/Api/StockController.php) | **PASS** |
 | API GET /stock avec filtres productId & warehouseId | [`app/Http/Controllers/Api/StockController.php`](app/Http/Controllers/Api/StockController.php) | **PASS** |
 | Interdiction stricte du stock négatif (HTTP 422) | [`app/Services/StockService.php`](app/Services/StockService.php) | **PASS** |
 | Verrouillage concurrentiel pessimiste & atomicité | [`app/Services/StockService.php`](app/Services/StockService.php) | **PASS** |
 | Test de concurrence réel multi-processus MySQL | [`tests/Feature/RealMysqlConcurrencyTest.php`](tests/Feature/RealMysqlConcurrencyTest.php) | **PASS** |
-| Tests automatisés PHPUnit (>= 2 requis) | 42 tests automatisés dans [`tests/Feature/`](tests/Feature/) | **PASS** |
+| Tests d'intégrité & non-régression (RESTRICT, CHECK, Seeder) | [`tests/Feature/DataIntegrityTest.php`](tests/Feature/DataIntegrityTest.php) | **PASS** |
+| Tests automatisés PHPUnit (>= 2 requis) | 51 tests automatisés dans [`tests/Feature/`](tests/Feature/) (164 assertions) | **PASS** |
 | Analyse critique du pseudo-code read-check-write | Section 4.1 du présent README | **PASS** |
 | Découpage pour deux développeurs avec critères Gherkin | Section 4.3 du présent README | **PASS** |
 | Collection Postman complète importable | [`mini_erp_stock_postman_collection.json`](mini_erp_stock_postman_collection.json) | **PASS** |
