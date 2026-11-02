@@ -40,3 +40,4 @@ class VerifyCsrfToken extends BaseValidateCsrfToken
         return parent::handle($request, $next);
     }
 }
+
