@@ -570,24 +570,15 @@ Une fois le serveur démarré, ouvrez votre navigateur :
 
 ---
 
-## Scénario de Démonstration en 5 Minutes (Pitch Recruteur)
+## Le scénario de démonstration doit présenter l'application ainsi que l'ensemble des tests réalisés. Veuillez noter que le README décrit en détail le projet, son architecture, ses fonctionnalités et les tests effectués.
 
-- **0:00 - 1:00 | Introduction & Architecture globale**
-  - Présentation de la stack Laravel 12 + React 18 + Inertia.js 2 + MySQL InnoDB.
-  - Démonstration du Dashboard : KPIs valorisés en euros, alertes de rupture, distribution graphique par site.
-- **1:00 - 2:00 | Démonstration du flux d'entrée et de sortie**
-  - Navigation vers l'onglet **Mouvements**.
-  - Saisie d'une entrée de 50 unités : observation de la mise à jour immédiate du Dashboard et de l'historique.
-- **2:00 - 3:00 | Démonstration Anti-Stock Négatif & Concurrence**
-  - Tentative de sortie de 99 999 unités : affichage immédiat de l'erreur 422 avec message explicatif clair.
-  - Explication du verrouillage pessimiste `SELECT ... FOR UPDATE` et du rollback automatique.
-- **3:00 - 4:00 | Démonstration du Transfert Inter-Entrepôts**
-  - Sélection du mode Transfert : Paris vers Lyon pour 10 unités.
-  - Constat du débit/crédit atomique et explication de la prévention des deadlocks par ordonnancement canonique des verrous.
-- **4:00 - 5:00 | Revue de Leadership & Suite de Tests**
-  - Exécution en direct dans le terminal : `php artisan test` (**69 tests au vert, 226 assertions**).
-  - Démonstration de la sécurité API : protection CSRF hybride (Session vs Bearer), sanitization des 500, limitation du brute force (`throttle:10,1`).
-  - Présentation de la revue critique du pseudo-code et de la découpe en User Stories pour les 2 développeurs.
+
+https://github.com/user-attachments/assets/9777163e-81c7-45e3-9386-07e682fe555c
+
+
+https://github.com/user-attachments/assets/0bc695c4-8ee5-433d-ba67-b1229d795a45
+
+
 
 ---
 
