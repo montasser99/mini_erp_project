@@ -12,10 +12,15 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        // Remplacement du validateur CSRF par notre middleware qui distingue Bearer Token vs Session
+        $middleware->replace(
+            \Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class,
+            \App\Http\Middleware\VerifyCsrfToken::class
+        );
+
+        // Seules les routes api/* sont globalement exemptées (stateless sans cookie de session)
         $middleware->validateCsrfTokens(except: [
             'api/*',
-            'movements',
-            'stock',
         ]);
 
         $middleware->web(append: [

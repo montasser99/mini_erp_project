@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\StoreMovementRequest;
 use App\Models\Product;
 use App\Models\StockMovement;
 use App\Models\Warehouse;
@@ -35,22 +36,13 @@ class MovementController extends Controller
     }
 
     /**
-     * Créer un mouvement de stock via le formulaire web.
+     * Créer un mouvement de stock via le formulaire web (Inertia).
+     * Utilise le FormRequest centralisé pour garantir la parité stricte des règles avec l'API.
      */
-    public function store(Request $request)
+    public function store(StoreMovementRequest $request)
     {
-        $validated = $request->validate([
-            'product_id' => ['required', 'integer', 'exists:products,id'],
-            'warehouse_id' => ['required', 'integer', 'exists:warehouses,id'],
-            'type' => ['required', 'in:IN,OUT,TRANSFER'],
-            'quantity' => ['required', 'integer', 'min:1'],
-            'destination_warehouse_id' => ['nullable', 'integer', 'exists:warehouses,id'],
-            'reference' => ['nullable', 'string', 'max:255'],
-            'notes' => ['nullable', 'string'],
-        ]);
-
         try {
-            $this->stockService->createMovement($validated, $request->user()->id);
+            $this->stockService->createMovement($request->validated(), $request->user()->id);
 
             return redirect()->route('movements.index')
                 ->with('success', 'Mouvement de stock créé avec succès.');

@@ -54,16 +54,17 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
 // =========================================================================
 // Endpoints Officiels Demandés dans le Sujet (POST /movements & GET /stock)
-// Supporte indifféremment l'envoi de formulaires Web et les appels REST JSON (Sanctum / Session)
+// Distinction stricte : Bearer Token (API REST) vs Session (Formulaire Web Inertia)
 // =========================================================================
 Route::middleware(['auth:sanctum,web'])->group(function () {
-    Route::post('/movements', function (Request $request) {
-        if ($request->expectsJson() || $request->isJson() || $request->wantsJson()) {
-            return app(StockController::class)->storeMovement(
-                app(\App\Http\Requests\StoreMovementRequest::class)
-            );
+    Route::post('/movements', function (Request $request, \App\Http\Requests\StoreMovementRequest $formRequest) {
+        // Si la requête provient de l'application Inertia ou d'une soumission formulaire web standard
+        if ($request->header('X-Inertia') || (!$request->expectsJson() && !$request->bearerToken())) {
+            return app(MovementController::class)->store($formRequest);
         }
-        return app(MovementController::class)->store($request);
+
+        // Sinon, traitement comme requête API REST JSON pure
+        return app(StockController::class)->storeMovement($formRequest);
     })->name('movements.store');
 
     Route::get('/stock', [StockController::class, 'getStock'])->name('stock.get');

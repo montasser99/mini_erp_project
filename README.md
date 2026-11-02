@@ -17,10 +17,11 @@
    - Algorithme anti-stock négatif & gestion des erreurs (422, 401, 404, 500)
    - Verrouillage ciblé (Produit + Entrepôt) et stratégie anti-deadlock dans les transferts
 3. [Partie 3 : Tests Automatisés & Qualité (20 pts)](#partie-3--tests-automatisés--qualité-20-pts)
-   - Suite de tests PHPUnit : **61 tests passants, 190 assertions (100% verts)**
+   - Suite de tests PHPUnit : **69 tests passants, 226 assertions (100% verts)**
    - Test de concurrence réel multi-processus sur MySQL InnoDB
    - Tests d'intégrité stricte : RESTRICT sur les clés étrangères, CHECK SQL, seeders idempotents
    - Tests avancés de concurrence et transactions (retry 1213/1205, collision 1062, rollback intégral)
+   - Tests de sécurité d'API : CSRF hybride Bearer/Session, Rate Limiting login, sanitization 500
    - Collection Postman complète importable (`./mini_erp_stock_postman_collection.json`)
 4. [Partie 4 : Revue de Code & Leadership (20 pts)](#partie-4--revue-de-code--leadership-20-pts)
    - Audit critique du pseudo-code `stock = getStock(id); if stock >= qty: saveStock(id, stock-qty)`
@@ -270,13 +271,14 @@ $secondLevel = $this->lockOrCreateStockLevel($productId, $secondWarehouseId);
 
 ## Partie 3 : Tests Automatisés & Qualité (20 pts)
 
-### 3.1 Suite Complète PHPUnit : 61 Tests Validés (100% Green)
+### 3.1 Suite Complète PHPUnit : 69 Tests Validés (100% Green)
 
 Exécution réelle constatée via `php artisan test` :
 
 ```
    PASS  Tests\Unit\ExampleTest (1 test)
    PASS  Tests\Feature\ApiAuthTest (2 tests)
+   PASS  Tests\Feature\ApiSecurityAndSanitizationTest (8 tests)
    PASS  Tests\Feature\Auth\AuthenticationTest (4 tests)
    PASS  Tests\Feature\Auth\EmailVerificationTest (3 tests)
    PASS  Tests\Feature\Auth\PasswordConfirmationTest (3 tests)
@@ -290,8 +292,8 @@ Exécution réelle constatée via `php artisan test` :
    PASS  Tests\Feature\StockConcurrencyAndTransactionTest (10 tests)
    PASS  Tests\Feature\StockMovementTest (14 tests)
 
-  Tests:    61 passed (190 assertions)
-  Duration: 6.08s
+  Tests:    69 passed (226 assertions)
+  Duration: 7.07s
 ```
 
 ### 3.2 Tests d'Intégrité Stricte & Non-Régression ERP
@@ -339,7 +341,21 @@ Fichier : [`tests/Feature/StockConcurrencyAndTransactionTest.php`](tests/Feature
 9. `test_max_transaction_retries_is_five` : Vérifie la constante `StockService::MAX_TRANSACTION_RETRIES === 5`.
 10. `test_mysql_absent_stock_level_initialization` : Initialisation sécurisée sur MySQL réel d'une ligne de stock initialement absente.
 
-### 3.5 Collection Postman Prête à l'Emploi
+### 3.5 Tests de Sécurité API, CSRF Hybride & Sanitization
+
+Fichier : [`tests/Feature/ApiSecurityAndSanitizationTest.php`](tests/Feature/ApiSecurityAndSanitizationTest.php)
+
+8 tests de conformité de sécurité API :
+1. `test_get_stock_with_invalid_query_params_returns_422` : Rejette les paramètres `productId` ou `warehouseId` alphabétiques, négatifs ou malformés avec des messages 422 structurés.
+2. `test_get_stock_with_valid_query_params_returns_200` : Vérifie le bon fonctionnement du filtrage nominal.
+3. `test_api_login_rate_limiting_blocks_brute_force` : Limite les tentatives à 10 requêtes / minute et bloque la 11ème tentative avec HTTP 429 Too Many Requests.
+4. `test_web_session_post_movements_without_csrf_is_blocked` : Bloque toute soumission utilisant une session web sans jeton CSRF valide (rejet HTTP 419 / TokenMismatchException).
+5. `test_bearer_token_bypasses_csrf_safely_even_outside_test_mode` : Autorise de façon sûre les appels API avec Bearer Token Sanctum sans exiger de cookie CSRF.
+6. `test_bearer_token_request_is_safely_exempt_from_csrf` : Vérifie la compatibilité de `POST /movements` avec Postman.
+7. `test_unauthenticated_requests_return_401` : Vérifie que les routes protégées rejettent les appels sans authentification avec HTTP 401.
+8. `test_internal_server_errors_do_not_leak_sql_traces` : Simule une exception SQL contenant des tables secrètes et vérifie que la réponse HTTP 500 renvoie un message générique sans divulguer de trace SQL interne.
+
+### 3.6 Collection Postman Prête à l'Emploi
 
 Fichier : [`mini_erp_stock_postman_collection.json`](mini_erp_stock_postman_collection.json)  
 Il s'importe en 1 clic dans Postman et comprend :
@@ -569,8 +585,8 @@ Une fois le serveur démarré, ouvrez votre navigateur :
   - Sélection du mode Transfert : Paris vers Lyon pour 10 unités.
   - Constat du débit/crédit atomique et explication de la prévention des deadlocks par ordonnancement canonique des verrous.
 - **4:00 - 5:00 | Revue de Leadership & Suite de Tests**
-  - Exécution en direct dans le terminal : `php artisan test` (**61 tests au vert, 190 assertions**).
-  - Démonstration des garanties transactionnelles : gestion fine 1062 vs 1213/1205, retry borné à 5 tentatives, `ON DELETE RESTRICT` et `CHECK (quantity >= 0)`.
+  - Exécution en direct dans le terminal : `php artisan test` (**69 tests au vert, 226 assertions**).
+  - Démonstration de la sécurité API : protection CSRF hybride (Session vs Bearer), sanitization des 500, limitation du brute force (`throttle:10,1`).
   - Présentation de la revue critique du pseudo-code et de la découpe en User Stories pour les 2 développeurs.
 
 ---
@@ -587,16 +603,20 @@ Une fois le serveur démarré, ouvrez votre navigateur :
 | Données de démonstration & Seeder 100% idempotent | [`database/seeders/DatabaseSeeder.php`](database/seeders/DatabaseSeeder.php) | **PASS** |
 | Relations Eloquent complètes (User->movements, Warehouse->destMovements) | [`app/Models/User.php`](app/Models/User.php), [`app/Models/Warehouse.php`](app/Models/Warehouse.php), [`app/Models/Product.php`](app/Models/Product.php) | **PASS** |
 | API POST /movements (et alias POST /api/movements) | [`routes/web.php`](routes/web.php), [`routes/api.php`](routes/api.php), [`app/Http/Controllers/Api/StockController.php`](app/Http/Controllers/Api/StockController.php) | **PASS** |
-| API GET /stock avec filtres productId & warehouseId | [`app/Http/Controllers/Api/StockController.php`](app/Http/Controllers/Api/StockController.php) | **PASS** |
+| API GET /stock avec filtres productId & warehouseId validés | [`app/Http/Controllers/Api/StockController.php`](app/Http/Controllers/Api/StockController.php) | **PASS** |
 | Interdiction stricte du stock négatif (HTTP 422) | [`app/Services/StockService.php`](app/Services/StockService.php) | **PASS** |
 | Verrouillage concurrentiel pessimiste & atomicité | [`app/Services/StockService.php`](app/Services/StockService.php) | **PASS** |
 | Prévention ordonnée des deadlocks et retry borné (5 max) | [`app/Services/StockService.php`](app/Services/StockService.php) | **PASS** |
 | Gestion sûre des collisions d'insertion 1062 vs 1213/1205 | [`app/Services/StockService.php`](app/Services/StockService.php) | **PASS** |
-| Rejet des transferts intra-entrepôt et entités inactives | [`app/Services/StockService.php`](app/Services/StockService.php) | **PASS** |
+| Protection CSRF hybride (Session Web protégée, Bearer exempté) | [`app/Http/Middleware/VerifyCsrfToken.php`](app/Http/Middleware/VerifyCsrfToken.php), [`bootstrap/app.php`](bootstrap/app.php) | **PASS** |
+| Protection contre le Brute-Force sur `/api/login` | [`routes/api.php`](routes/api.php) (`throttle:10,1`) | **PASS** |
+| Sanitization des erreurs 500 (zéro fuite de trace SQL) | [`app/Http/Controllers/Api/StockController.php`](app/Http/Controllers/Api/StockController.php) | **PASS** |
+| Centralisation de validation avec FormRequest | [`app/Http/Requests/StoreMovementRequest.php`](app/Http/Requests/StoreMovementRequest.php) | **PASS** |
 | Test de concurrence réel multi-processus MySQL | [`tests/Feature/RealMysqlConcurrencyTest.php`](tests/Feature/RealMysqlConcurrencyTest.php) | **PASS** |
 | Tests d'intégrité & non-régression (RESTRICT, CHECK, Seeder) | [`tests/Feature/DataIntegrityTest.php`](tests/Feature/DataIntegrityTest.php) | **PASS** |
 | Tests de concurrence, transactions et retry borné | [`tests/Feature/StockConcurrencyAndTransactionTest.php`](tests/Feature/StockConcurrencyAndTransactionTest.php) | **PASS** |
-| Tests automatisés PHPUnit (>= 2 requis) | 61 tests automatisés dans [`tests/Feature/`](tests/Feature/) (190 assertions) | **PASS** |
+| Tests de sécurité API, CSRF, Throttling & Sanitization | [`tests/Feature/ApiSecurityAndSanitizationTest.php`](tests/Feature/ApiSecurityAndSanitizationTest.php) | **PASS** |
+| Tests automatisés PHPUnit (>= 2 requis) | 69 tests automatisés dans [`tests/Feature/`](tests/Feature/) (226 assertions) | **PASS** |
 | Analyse critique du pseudo-code read-check-write | Section 4.1 du présent README | **PASS** |
 | Découpage pour deux développeurs avec critères Gherkin | Section 4.3 du présent README | **PASS** |
 | Collection Postman complète importable | [`mini_erp_stock_postman_collection.json`](mini_erp_stock_postman_collection.json) | **PASS** |
