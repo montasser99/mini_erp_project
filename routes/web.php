@@ -1,6 +1,5 @@
 <?php
 
-use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\StockController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\MovementController;
@@ -62,26 +61,6 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
     Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');
     Route::delete('/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');
-});
-
-// =========================================================================
-// API REST (Auth Token Sanctum + Support Authentification Session)
-// =========================================================================
-
-// Endpoint d'authentification pour Postman / clients externes
-Route::post('/api/login', [AuthController::class, 'login']);
-
-// Groupe API avec support double auth (Sanctum Token ou Session Authentifiée)
-Route::middleware(['auth:sanctum'])->group(function () {
-    // Déconnexion API
-    Route::post('/api/logout', [AuthController::class, 'logout']);
-
-    // Endpoints API officiels demandés dans le sujet :
-    // 1) POST /movements (et alias POST /api/movements)
-    Route::post('/api/movements', [StockController::class, 'storeMovement']);
-
-    // 2) GET /stock?productId=&warehouseId= (et alias GET /api/stock)
-    Route::get('/api/stock', [StockController::class, 'getStock']);
 });
 
 require __DIR__.'/auth.php';
