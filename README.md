@@ -434,53 +434,74 @@ Fonctionnalité: Transfert de marchandise entre entrepôts
 
 ---
 
-## Guide d'Installation Pas à Pas pour le Recruteur
+## Guide d'Installation Pas à Pas pour le Recruteur / Directeur Technique
 
 ### 1. Prérequis Système
-- PHP 8.2 ou supérieur avec extensions `pdo_mysql`, `pdo_sqlite`, `mbstring`
-- Composer 2.x
-- Node.js (v18+) et npm
-- MySQL (WampServer, XAMPP ou MySQL natif sur port 3306)
+- **PHP** : 8.2 ou supérieur (avec extensions `pdo_mysql`, `pdo_sqlite`, `mbstring`, `openssl`)
+- **Composer** : 2.x
+- **Node.js & npm** : v18+ (Node.js 20 ou 22 recommandé)
+- **MySQL** : WampServer, XAMPP, Docker ou MySQL natif (port standard `3306`)
 
-### 2. Procédure Complète d'Installation depuis un Poste Neuf
+---
+
+### 2. Procédure Complète d'Installation en 10 Étapes (Depuis un Poste Neuf)
+
+Ouvrez votre terminal (PowerShell, Git Bash ou Terminal) et exécutez dans l'ordre :
 
 ```bash
-# 1. Cloner ou ouvrir le dossier du projet
-cd Mini-erp-stock
+# Étape 1 : Cloner le dépôt GitHub
+git clone https://github.com/montasser99/mini_erp_project.git
+cd mini_erp_project
 
-# 2. Installer les dépendances backend PHP
+# Étape 2 : Installer les dépendances backend PHP
 composer install
 
-# 3. Installer les dépendances frontend Node.js
+# Étape 3 : Installer les dépendances frontend Node.js
 npm install
 
-# 4. Configurer l'environnement
+# Étape 4 : Créer le fichier de configuration d'environnement
 cp .env.example .env
 
-# 5. Générer la clé d'application Laravel
+# Étape 5 : Générer la clé d'application Laravel chiffrée
 php artisan key:generate
 
-# 6. Créer la base de données MySQL (via WampServer ou CLI)
+# Étape 6 : Créer la base de données MySQL
+# Sous Windows WampServer / MySQL CLI :
 mysql -u root -e "CREATE DATABASE IF NOT EXISTS mini_erp_stock CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+# (Ou créez la base nommée 'mini_erp_stock' via phpMyAdmin : http://localhost/phpmyadmin)
 
-# 7. Exécuter les migrations et le jeu de données de test
+# Étape 7 : Exécuter les migrations et le jeu de données démo (Seeder)
 php artisan migrate --seed
 
-# 8. Compiler les assets frontend
+# Étape 8 : Compiler les assets frontend React + Inertia
 npm run build
 
-# 9. Lancer les tests automatisés
+# Étape 9 : Exécuter l'ensemble de la suite de tests automatisés (42 tests)
 php artisan test
 
-# 10. Démarrer le serveur de développement
+# Étape 10 : Démarrer le serveur web local
 php artisan serve
 ```
 
-L'application est immédiatement accessible à l'adresse : **`http://127.0.0.1:8000`**
+---
 
-### 3. Identifiants de Connexion Démo
-- **Email :** `admin@erp.com`
-- **Mot de passe :** `password`
+### 3. Accès à l'Application Immédiat
+
+Une fois le serveur démarré, ouvrez votre navigateur :
+* 🌐 **URL de l'application :** [http://127.0.0.1:8000](http://127.0.0.1:8000)
+* 👤 **Compte Administrateur Démo :**
+  - **Email :** `admin@erp.com`
+  - **Mot de passe :** `password`
+* 👤 **Compte Opérateur Logistique :**
+  - **Email :** `operator@erp.com`
+  - **Mot de passe :** `password`
+
+---
+
+### 4. Test des APIs avec Postman (Optionnel)
+1. Ouvrez Postman et cliquez sur **Import**.
+2. Sélectionnez le fichier situé à la racine du dépôt : [`mini_erp_stock_postman_collection.json`](mini_erp_stock_postman_collection.json).
+3. Exécutez la requête `01. Authentification > Connexion` : le jeton Bearer sera automatiquement configuré pour tous les appels `POST /movements` et `GET /stock`.
 
 ---
 
