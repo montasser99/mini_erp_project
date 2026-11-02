@@ -15,3 +15,4 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/movements', [StockController::class, 'storeMovement']);
     Route::get('/stock', [StockController::class, 'getStock']);
 });
+

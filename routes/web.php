@@ -43,10 +43,22 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::put('/warehouses/{warehouse}', [WarehouseController::class, 'update'])->name('warehouses.update');
     Route::delete('/warehouses/{warehouse}', [WarehouseController::class, 'destroy'])->name('warehouses.destroy');
 
-    // Mouvements de stock (Web UI)
+    // Mouvements de stock (IHM Web Inertia)
     Route::get('/movements', [MovementController::class, 'index'])->name('movements.index');
+
+    // Profil utilisateur
+    Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
+    Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');
+    Route::delete('/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');
+});
+
+// =========================================================================
+// Endpoints Officiels Demandés dans le Sujet (POST /movements & GET /stock)
+// Supporte indifféremment l'envoi de formulaires Web et les appels REST JSON (Sanctum / Session)
+// =========================================================================
+Route::middleware(['auth:sanctum,web'])->group(function () {
     Route::post('/movements', function (Request $request) {
-        if ($request->wantsJson()) {
+        if ($request->expectsJson() || $request->isJson() || $request->wantsJson()) {
             return app(StockController::class)->storeMovement(
                 app(\App\Http\Requests\StoreMovementRequest::class)
             );
@@ -54,13 +66,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
         return app(MovementController::class)->store($request);
     })->name('movements.store');
 
-    // Stock direct (Web ou JSON)
     Route::get('/stock', [StockController::class, 'getStock'])->name('stock.get');
-
-    // Profil utilisateur
-    Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
-    Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');
-    Route::delete('/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');
 });
 
 require __DIR__.'/auth.php';

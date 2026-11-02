@@ -299,4 +299,112 @@ class StockMovementTest extends TestCase
 
         $this->assertEquals(50, $stockLevel->quantity);
     }
+
+    // ===========================================================
+    // TEST 11 : POST /movements direct (Chemin exact du sujet)
+    // ===========================================================
+
+    public function test_can_create_movement_via_root_path(): void
+    {
+        $response = $this->actingAs($this->user)->postJson('/movements', [
+            'product_id' => $this->product->id,
+            'warehouse_id' => $this->warehouseA->id,
+            'type' => 'IN',
+            'quantity' => 15,
+            'reference' => 'ROOT-001',
+        ]);
+
+        $response->assertStatus(201)
+            ->assertJsonPath('data.quantity', 15);
+    }
+
+    // ===========================================================
+    // TEST 12 : GET /stock direct (Chemin exact du sujet)
+    // ===========================================================
+
+    public function test_can_get_stock_via_root_path_with_filters(): void
+    {
+        StockLevel::create([
+            'product_id' => $this->product->id,
+            'warehouse_id' => $this->warehouseA->id,
+            'quantity' => 42,
+        ]);
+
+        $response = $this->actingAs($this->user)->getJson(
+            '/stock?productId=' . $this->product->id . '&warehouseId=' . $this->warehouseA->id
+        );
+
+        $response->assertStatus(200)
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.quantity', 42);
+    }
+
+    // ===========================================================
+    // TEST 13 : Rejet des quantités négatives ou nulles
+    // ===========================================================
+
+    public function test_cannot_create_movement_with_non_positive_quantity(): void
+    {
+        $response = $this->actingAs($this->user)->postJson('/movements', [
+            'product_id' => $this->product->id,
+            'warehouse_id' => $this->warehouseA->id,
+            'type' => 'IN',
+            'quantity' => 0,
+        ]);
+
+        $response->assertStatus(422)
+            ->assertJsonValidationErrors(['quantity']);
+
+        $responseNegative = $this->actingAs($this->user)->postJson('/movements', [
+            'product_id' => $this->product->id,
+            'warehouse_id' => $this->warehouseA->id,
+            'type' => 'OUT',
+            'quantity' => -5,
+        ]);
+
+        $responseNegative->assertStatus(422)
+            ->assertJsonValidationErrors(['quantity']);
+    }
+
+    // ===========================================================
+    // TEST 14 : Simulation exacte du pseudo-code audité
+    // stock = getStock(id); if stock >= qty: saveStock(id, stock - qty)
+    // ===========================================================
+
+    public function test_pseudocode_mitigation_scenario(): void
+    {
+        // 1. Initialiser le stock à 10
+        $this->stockService->createMovement([
+            'product_id' => $this->product->id,
+            'warehouse_id' => $this->warehouseA->id,
+            'type' => 'IN',
+            'quantity' => 10,
+        ], $this->user->id);
+
+        // 2. Première opération : retrait de 8 -> Succès (reste 2)
+        $respA = $this->actingAs($this->user)->postJson('/movements', [
+            'product_id' => $this->product->id,
+            'warehouse_id' => $this->warehouseA->id,
+            'type' => 'OUT',
+            'quantity' => 8,
+        ]);
+        $respA->assertStatus(201);
+
+        // 3. Deuxième opération : tentative de retrait de 7 -> Rejet strict (422)
+        $respB = $this->actingAs($this->user)->postJson('/movements', [
+            'product_id' => $this->product->id,
+            'warehouse_id' => $this->warehouseA->id,
+            'type' => 'OUT',
+            'quantity' => 7,
+        ]);
+        $respB->assertStatus(422)
+            ->assertJsonValidationErrors(['quantity']);
+
+        // 4. Le stock reste intact à 2
+        $finalStock = StockLevel::where('product_id', $this->product->id)
+            ->where('warehouse_id', $this->warehouseA->id)
+            ->first();
+
+        $this->assertEquals(2, $finalStock->quantity);
+    }
 }

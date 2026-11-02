@@ -6,16 +6,19 @@ use App\Models\Product;
 use App\Models\StockLevel;
 use App\Models\StockMovement;
 use App\Models\Warehouse;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 /**
- * StockService — Logique métier commune pour la gestion de stock.
+ * StockService — Logique métier commune pour la gestion de stock multi-entrepôts.
  *
- * Garantit :
- * - La cohérence transactionnelle (DB::transaction)
- * - Le verrouillage pessimiste (lockForUpdate) contre les accès concurrents
- * - L'interdiction de stock négatif
+ * Garanties architecturales :
+ * - Cohérence transactionnelle ACID (DB::transaction)
+ * - Verrouillage pessimiste (SELECT ... FOR UPDATE) ordonné pour éliminer les race conditions
+ * - Prévention des deadlocks lors des transferts croisés (tri canonique min/max sur les identifiants)
+ * - Interdiction formelle du stock négatif (quantité demandée <= stock actuel vérifié sous verrou)
+ * - Gestion sécurisée des enregistrements absents et collisions d'insertions concurrentes
  */
 class StockService
 {
@@ -31,22 +34,23 @@ class StockService
     {
         return DB::transaction(function () use ($data, $userId) {
             $type = $data['type'];
-            $productId = $data['product_id'];
-            $warehouseId = $data['warehouse_id'];
+            $productId = (int) $data['product_id'];
+            $warehouseId = (int) $data['warehouse_id'];
             $quantity = (int) $data['quantity'];
-            $destinationWarehouseId = $data['destination_warehouse_id'] ?? null;
+            $destinationWarehouseId = isset($data['destination_warehouse_id']) ? (int) $data['destination_warehouse_id'] : null;
 
-            // Validation : la quantité doit être positive
+            // 1. Validation de la quantité : doit être un entier strictement positif
             if ($quantity <= 0) {
                 throw ValidationException::withMessages([
                     'quantity' => ['La quantité doit être supérieure à 0.'],
                 ]);
             }
 
-            // Validation : le produit et l'entrepôt doivent exister
+            // 2. Validation d'existence des entités de base
             Product::findOrFail($productId);
             Warehouse::findOrFail($warehouseId);
 
+            // 3. Exécution métier selon le type d'opération
             switch ($type) {
                 case 'IN':
                     $this->processEntry($productId, $warehouseId, $quantity);
@@ -62,7 +66,7 @@ class StockService
                             'destination_warehouse_id' => ['L\'entrepôt de destination est requis pour un transfert.'],
                         ]);
                     }
-                    if ($warehouseId == $destinationWarehouseId) {
+                    if ($warehouseId === $destinationWarehouseId) {
                         throw ValidationException::withMessages([
                             'destination_warehouse_id' => ['L\'entrepôt source et destination doivent être différents.'],
                         ]);
@@ -77,7 +81,7 @@ class StockService
                     ]);
             }
 
-            // Enregistrer le mouvement dans l'historique
+            // 4. Enregistrement immuable dans le journal d'audit (Ledger)
             return StockMovement::create([
                 'product_id' => $productId,
                 'warehouse_id' => $warehouseId,
@@ -92,21 +96,23 @@ class StockService
     }
 
     /**
-     * Entrée de stock — ajouter au stock de l'entrepôt.
+     * Entrée de stock — Crédit sécurisé avec verrouillage pessimiste.
      */
     private function processEntry(int $productId, int $warehouseId, int $quantity): void
     {
-        $stockLevel = $this->getOrCreateStockLevel($productId, $warehouseId);
+        $this->getOrCreateStockLevel($productId, $warehouseId);
 
-        // Verrouillage pessimiste pour éviter les race conditions
-        $stockLevel = StockLevel::where('id', $stockLevel->id)->lockForUpdate()->first();
+        $stockLevel = StockLevel::where('product_id', $productId)
+            ->where('warehouse_id', $warehouseId)
+            ->lockForUpdate()
+            ->firstOrFail();
 
         $stockLevel->quantity += $quantity;
         $stockLevel->save();
     }
 
     /**
-     * Sortie de stock — retirer du stock avec vérification de stock négatif.
+     * Sortie de stock — Débit avec contrôle sous verrouillage pessimiste (anti-stock négatif).
      */
     private function processExit(int $productId, int $warehouseId, int $quantity): void
     {
@@ -115,8 +121,9 @@ class StockService
             ->lockForUpdate()
             ->first();
 
-        if (!$stockLevel || $stockLevel->quantity < $quantity) {
-            $currentQty = $stockLevel ? $stockLevel->quantity : 0;
+        $currentQty = $stockLevel ? $stockLevel->quantity : 0;
+
+        if (!$stockLevel || $currentQty < $quantity) {
             throw ValidationException::withMessages([
                 'quantity' => [
                     "Stock insuffisant. Stock actuel : {$currentQty}, demandé : {$quantity}."
@@ -129,37 +136,36 @@ class StockService
     }
 
     /**
-     * Transfert inter-entrepôts — retirer de la source, ajouter à la destination.
+     * Transfert inter-entrepôts — Débit/Crédit atomique avec ordonnancement canonique des verrous.
      *
-     * Le verrouillage est toujours fait dans l'ordre croissant des IDs
-     * pour éviter les deadlocks.
+     * Pour éliminer les deadlocks lors de transferts bidirectionnels simultanés :
+     * Les verrous sont systématiquement posés dans l'ordre croissant de warehouse_id
+     * en ciblant TOUJOURS le couple spécifique (product_id, warehouse_id).
      */
     private function processTransfer(int $productId, int $sourceId, int $destinationId, int $quantity): void
     {
-        // Éviter les deadlocks : verrouiller dans l'ordre croissant des warehouse IDs
-        $firstId = min($sourceId, $destinationId);
-        $secondId = max($sourceId, $destinationId);
+        $firstWarehouseId = min($sourceId, $destinationId);
+        $secondWarehouseId = max($sourceId, $destinationId);
 
-        // Créer ou récupérer les niveaux de stock
-        $this->getOrCreateStockLevel($productId, $firstId);
-        $this->getOrCreateStockLevel($productId, $secondId);
+        // Garantir l'existence des deux enregistrements avant verrouillage
+        $this->getOrCreateStockLevel($productId, $firstWarehouseId);
+        $this->getOrCreateStockLevel($productId, $secondWarehouseId);
 
-        // Verrouiller dans l'ordre
+        // Verrouillage dans l'ordre strict par produit ET entrepôt
         $firstLevel = StockLevel::where('product_id', $productId)
-            ->where('warehouse_id', $firstId)
+            ->where('warehouse_id', $firstWarehouseId)
             ->lockForUpdate()
-            ->first();
+            ->firstOrFail();
 
         $secondLevel = StockLevel::where('product_id', $productId)
-            ->where('warehouse_id', $secondId)
+            ->where('warehouse_id', $secondWarehouseId)
             ->lockForUpdate()
-            ->first();
+            ->firstOrFail();
 
-        // Identifier source et destination
-        $sourceLevel = ($sourceId === $firstId) ? $firstLevel : $secondLevel;
-        $destLevel = ($destinationId === $firstId) ? $firstLevel : $secondLevel;
+        // Réassignation exacte source / destination
+        $sourceLevel = ($sourceId === $firstWarehouseId) ? $firstLevel : $secondLevel;
+        $destLevel = ($destinationId === $firstWarehouseId) ? $firstLevel : $secondLevel;
 
-        // Vérifier le stock suffisant
         if ($sourceLevel->quantity < $quantity) {
             throw ValidationException::withMessages([
                 'quantity' => [
@@ -176,25 +182,32 @@ class StockService
     }
 
     /**
-     * Créer ou récupérer le StockLevel pour un produit/entrepôt.
+     * Récupère ou initialise un niveau de stock de façon résiliente aux collisions concurrentes.
      */
     private function getOrCreateStockLevel(int $productId, int $warehouseId): StockLevel
     {
-        return StockLevel::firstOrCreate(
-            [
-                'product_id' => $productId,
-                'warehouse_id' => $warehouseId,
-            ],
-            ['quantity' => 0]
-        );
+        try {
+            return StockLevel::firstOrCreate(
+                [
+                    'product_id' => $productId,
+                    'warehouse_id' => $warehouseId,
+                ],
+                ['quantity' => 0]
+            );
+        } catch (QueryException $e) {
+            // Collision d'insertion concurrente (code MySQL 1062 - clef unique dupliquée)
+            return StockLevel::where('product_id', $productId)
+                ->where('warehouse_id', $warehouseId)
+                ->firstOrFail();
+        }
     }
 
     /**
-     * Consulter le stock (GET /stock).
+     * Consultation du stock (GET /stock ou GET /api/stock).
      *
      * @param int|null $productId
      * @param int|null $warehouseId
-     * @return \Illuminate\Support\Collection
+     * @return \Illuminate\Database\Eloquent\Collection
      */
     public function getStock(?int $productId = null, ?int $warehouseId = null)
     {
@@ -211,4 +224,3 @@ class StockService
         return $query->get();
     }
 }
-
