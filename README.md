@@ -17,9 +17,10 @@
    - Algorithme anti-stock négatif & gestion des erreurs (422, 401, 404, 500)
    - Verrouillage ciblé (Produit + Entrepôt) et stratégie anti-deadlock dans les transferts
 3. [Partie 3 : Tests Automatisés & Qualité (20 pts)](#partie-3--tests-automatisés--qualité-20-pts)
-   - Suite de tests PHPUnit : **51 tests passants, 164 assertions (100% verts)**
+   - Suite de tests PHPUnit : **61 tests passants, 190 assertions (100% verts)**
    - Test de concurrence réel multi-processus sur MySQL InnoDB
    - Tests d'intégrité stricte : RESTRICT sur les clés étrangères, CHECK SQL, seeders idempotents
+   - Tests avancés de concurrence et transactions (retry 1213/1205, collision 1062, rollback intégral)
    - Collection Postman complète importable (`./mini_erp_stock_postman_collection.json`)
 4. [Partie 4 : Revue de Code & Leadership (20 pts)](#partie-4--revue-de-code--leadership-20-pts)
    - Audit critique du pseudo-code `stock = getStock(id); if stock >= qty: saveStock(id, stock-qty)`
@@ -232,39 +233,44 @@ Retourne l'état des stocks en temps réel avec filtrage dynamique et chargement
   }
   ```
 
-### 2.3 Logique de Verrouillage & Prévention des Deadlocks
+### 2.3 Logique de Verrouillage, Prévention & Résolution des Deadlocks
 
 Lors d'un transfert simultané :
 - Transaction 1 : transfère le produit P de l'entrepôt 1 vers l'entrepôt 2
 - Transaction 2 : transfère le produit P de l'entrepôt 2 vers l'entrepôt 1
 
-Sans précaution, T1 verrouille (P, 1) puis attend (P, 2), tandis que T2 verrouille (P, 2) puis attend (P, 1) -> **Deadlock MySQL 1213**.
+Sans précaution, T1 verrouille (P, 1) puis attend (P, 2), tandis que T2 verrouille (P, 2) puis attend (P, 1) -> **Deadlock MySQL 1213** (Cycle dans le graphe d'attente Wait-For).
 
-**Correction implémentée dans `StockService.php` :**
-1. **Filtre strict Produit + Entrepôt :** chaque lock verrouille explicitement le couple `(product_id, warehouse_id)`.
-2. **Ordre déterministe d'acquisition :** les verrous sont posés dans l'ordre croissant de `warehouse_id` (`min` puis `max`).
-3. **Résilience aux lignes absentes :** si un niveau de stock n'existe pas encore pour la destination, il est créé de façon résiliente aux collisions concurrentes (`try/catch` sur QueryException 1062) puis verrouillé.
+**Architecture Implémentée dans `StockService.php` :**
+1. **Filtre strict Produit + Entrepôt :** chaque lock verrouille explicitement le tuple `(product_id, warehouse_id)`.
+2. **Ordre déterministe d'acquisition (Prévention) :** les verrous sont posés dans l'ordre croissant de `warehouse_id` (`min` puis `max`). T1 et T2 acquièrent donc tous deux `(P, min)` avant de solliciter `(P, max)`, éliminant le deadlock circulaire classique.
+3. **Création sûre des lignes absentes (`lockOrCreateStockLevel`) :**
+   - Un `SELECT ... FOR UPDATE` est d'abord tenté (chemin nominal à 99%).
+   - Si la ligne est absente, un `INSERT` contrôlé (`quantity = 0`) est tenté.
+   - Si une collision concurrente survient (Code MySQL 1062 - `ER_DUP_ENTRY`), seule cette exception spécifique est interceptée pour re-sélectionner la ligne sous verrou `lockForUpdate()`.
+   - **Toute autre exception (Deadlock 1213, Lock Timeout 1205, Check Constraint 3819) n'est JAMAIS masquée** et remonte directement.
+4. **Stratégie de Récupération Bornée (Retry Transactionnel) :**
+   - *Réalité mathématique des SGBD :* Aucun système relationnel à verrous fins ne peut garantir 0 deadlock (conversions de verrous S->X, gap locks sur clés inexistantes, verrous de clés étrangères).
+   - *Solution d'ingénierie :* `DB::transaction($callback, StockService::MAX_TRANSACTION_RETRIES)` configure **5 tentatives automatiques**. En cas d'erreur 1213 ou 1205, Laravel annule (ROLLBACK) la transaction victime et la rejoue avec backoff.
+5. **Garanties Métier Supplémentaires :**
+   - Rejet immédiat si `warehouse_id === destination_warehouse_id` (transfert intra-entrepôt interdit).
+   - Rejet si le produit ou l'un des entrepôts (source ou destination) est désactivé (`is_active = false`).
+   - Quantité strictement entière et positive (`quantity > 0`).
 
 ```php
+// Acquisition ordonnée canonique
 $firstWarehouseId = min($sourceId, $destinationId);
 $secondWarehouseId = max($sourceId, $destinationId);
 
-$firstLevel = StockLevel::where('product_id', $productId)
-    ->where('warehouse_id', $firstWarehouseId)
-    ->lockForUpdate()
-    ->firstOrFail();
-
-$secondLevel = StockLevel::where('product_id', $productId)
-    ->where('warehouse_id', $secondWarehouseId)
-    ->lockForUpdate()
-    ->firstOrFail();
+$firstLevel = $this->lockOrCreateStockLevel($productId, $firstWarehouseId);
+$secondLevel = $this->lockOrCreateStockLevel($productId, $secondWarehouseId);
 ```
 
 ---
 
 ## Partie 3 : Tests Automatisés & Qualité (20 pts)
 
-### 3.1 Suite Complète PHPUnit : 51 Tests Validés (100% Green)
+### 3.1 Suite Complète PHPUnit : 61 Tests Validés (100% Green)
 
 Exécution réelle constatée via `php artisan test` :
 
@@ -281,10 +287,11 @@ Exécution réelle constatée via `php artisan test` :
    PASS  Tests\Feature\ExampleTest (1 test)
    PASS  Tests\Feature\ProfileTest (5 tests)
    PASS  Tests\Feature\RealMysqlConcurrencyTest (1 test)
+   PASS  Tests\Feature\StockConcurrencyAndTransactionTest (10 tests)
    PASS  Tests\Feature\StockMovementTest (14 tests)
 
-  Tests:    51 passed (164 assertions)
-  Duration: 5.37s
+  Tests:    61 passed (190 assertions)
+  Duration: 6.08s
 ```
 
 ### 3.2 Tests d'Intégrité Stricte & Non-Régression ERP
@@ -316,7 +323,23 @@ Ce test lance **deux processus PHP distincts via `proc_open`** s'exécutant simu
   - Le stock final en base MySQL est de **exactement 2 unités**.
   - Zéro race condition, zéro corruption de données.
 
-### 3.4 Collection Postman Prête à l'Emploi
+### 3.4 Tests Avancés de Concurrence, Transactions & Retry Borné
+
+Fichier : [`tests/Feature/StockConcurrencyAndTransactionTest.php`](tests/Feature/StockConcurrencyAndTransactionTest.php)
+
+10 tests automatisés approfondis :
+1. `test_transfer_to_same_warehouse_is_rejected` : Rejet immédiat avec 422 si source === destination.
+2. `test_invalid_quantities_are_strictly_rejected` : Rejet des valeurs négatives, nulles, flottantes ou alphabétiques.
+3. `test_movement_on_inactive_product_is_rejected` : Rejet avec message clair si le produit est désactivé.
+4. `test_movement_on_inactive_source_warehouse_is_rejected` : Rejet si l'entrepôt source est inactif.
+5. `test_transfer_to_inactive_destination_warehouse_is_rejected` : Rejet si l'entrepôt cible est inactif.
+6. `test_is_unique_constraint_violation_identifies_collisions` : Distingue formellement le code MySQL 1062 d'un deadlock (1213) ou d'un lock timeout (1205).
+7. `test_lock_or_create_does_not_swallow_deadlocks_or_other_exceptions` : Vérifie que `lockOrCreateStockLevel` propage les deadlocks pour déclencher le retry.
+8. `test_full_atomic_rollback_on_failed_transfer` : Vérifie le rollback complet (débit annulé, crédit annulé, 0 mouvement fantôme inséré).
+9. `test_max_transaction_retries_is_five` : Vérifie la constante `StockService::MAX_TRANSACTION_RETRIES === 5`.
+10. `test_mysql_absent_stock_level_initialization` : Initialisation sécurisée sur MySQL réel d'une ligne de stock initialement absente.
+
+### 3.5 Collection Postman Prête à l'Emploi
 
 Fichier : [`mini_erp_stock_postman_collection.json`](mini_erp_stock_postman_collection.json)  
 Il s'importe en 1 clic dans Postman et comprend :
@@ -546,8 +569,8 @@ Une fois le serveur démarré, ouvrez votre navigateur :
   - Sélection du mode Transfert : Paris vers Lyon pour 10 unités.
   - Constat du débit/crédit atomique et explication de la prévention des deadlocks par ordonnancement canonique des verrous.
 - **4:00 - 5:00 | Revue de Leadership & Suite de Tests**
-  - Exécution en direct dans le terminal : `php artisan test` (**51 tests au vert, 164 assertions**).
-  - Démonstration des garanties d'intégrité : `ON DELETE RESTRICT`, `CHECK (quantity >= 0)` native MySQL, et seeders idempotents.
+  - Exécution en direct dans le terminal : `php artisan test` (**61 tests au vert, 190 assertions**).
+  - Démonstration des garanties transactionnelles : gestion fine 1062 vs 1213/1205, retry borné à 5 tentatives, `ON DELETE RESTRICT` et `CHECK (quantity >= 0)`.
   - Présentation de la revue critique du pseudo-code et de la découpe en User Stories pour les 2 développeurs.
 
 ---
@@ -567,9 +590,13 @@ Une fois le serveur démarré, ouvrez votre navigateur :
 | API GET /stock avec filtres productId & warehouseId | [`app/Http/Controllers/Api/StockController.php`](app/Http/Controllers/Api/StockController.php) | **PASS** |
 | Interdiction stricte du stock négatif (HTTP 422) | [`app/Services/StockService.php`](app/Services/StockService.php) | **PASS** |
 | Verrouillage concurrentiel pessimiste & atomicité | [`app/Services/StockService.php`](app/Services/StockService.php) | **PASS** |
+| Prévention ordonnée des deadlocks et retry borné (5 max) | [`app/Services/StockService.php`](app/Services/StockService.php) | **PASS** |
+| Gestion sûre des collisions d'insertion 1062 vs 1213/1205 | [`app/Services/StockService.php`](app/Services/StockService.php) | **PASS** |
+| Rejet des transferts intra-entrepôt et entités inactives | [`app/Services/StockService.php`](app/Services/StockService.php) | **PASS** |
 | Test de concurrence réel multi-processus MySQL | [`tests/Feature/RealMysqlConcurrencyTest.php`](tests/Feature/RealMysqlConcurrencyTest.php) | **PASS** |
 | Tests d'intégrité & non-régression (RESTRICT, CHECK, Seeder) | [`tests/Feature/DataIntegrityTest.php`](tests/Feature/DataIntegrityTest.php) | **PASS** |
-| Tests automatisés PHPUnit (>= 2 requis) | 51 tests automatisés dans [`tests/Feature/`](tests/Feature/) (164 assertions) | **PASS** |
+| Tests de concurrence, transactions et retry borné | [`tests/Feature/StockConcurrencyAndTransactionTest.php`](tests/Feature/StockConcurrencyAndTransactionTest.php) | **PASS** |
+| Tests automatisés PHPUnit (>= 2 requis) | 61 tests automatisés dans [`tests/Feature/`](tests/Feature/) (190 assertions) | **PASS** |
 | Analyse critique du pseudo-code read-check-write | Section 4.1 du présent README | **PASS** |
 | Découpage pour deux développeurs avec critères Gherkin | Section 4.3 du présent README | **PASS** |
 | Collection Postman complète importable | [`mini_erp_stock_postman_collection.json`](mini_erp_stock_postman_collection.json) | **PASS** |

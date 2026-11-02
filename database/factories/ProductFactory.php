@@ -16,6 +16,7 @@ class ProductFactory extends Factory
             'sku' => strtoupper($this->faker->unique()->bothify('PRD-####-??')),
             'description' => $this->faker->sentence(),
             'price' => $this->faker->randomFloat(2, 1, 500),
+            'is_active' => true,
         ];
     }
 }
